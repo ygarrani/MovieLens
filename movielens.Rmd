@@ -1,0 +1,695 @@
+---
+title: "HarvardX Data Science Certificate - PH125.9x"
+subtitle : "MovieLens Project"
+author: "Youssef Bougarrani"
+date: "07/24/2021"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+---
+
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = 'center', cache=FALSE,
+                      cache.lazy = FALSE)
+```
+
+\newpage
+
+# Introduction :
+
+This project is related to the capstone of the HarvardX data science professional certificate PH125.9x. It's on the famous MovieLens recommendation system.
+MovieLens itself is a research site run by GroupLens Research group at the University of Minnesota. The first automated recommender system was developed there in 1993.
+Recommendation systems use ratings that users have given to items to make specific recommendations for other users.
+The goal of this project will be to predict ratings based on a training data set.
+The data set will be uploaded from grouplens.org website.
+
+After an exploratory analysis, the best recommender system built on the training data set will be tested on a validation data set. The performance of the models is based on the root mean squared error RMSE.
+
+## Session information
+
+```{r echo=FALSE}
+sessionInfo()
+
+```
+
+## Dataset Description
+
+The dataset is available in several snapshots. The ones that were used in this analysis were the 10 millions ratings (10 millions rows).
+
+## Loading  data
+
+First the data is imported from the url address and partitioned to edx and validation data sets.
+
+```{r echo=FALSE, include=FALSE}
+
+# !!! 20 minutes to execute the whole code
+rm(list = ls())
+gc()
+# to permit execution in 8 Go RAM machine
+
+##########################################################
+# Create edx set, validation set (final hold-out test set)
+##########################################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse",
+                                         repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret",
+                                     repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table",
+                                          repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate")
+if(!require(knitr)) install.packages("knitr")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(lubridate)
+library(knitr)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", 
+                             readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), 
+                          "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 3.6 or earlier:
+# movies <- as.data.frame(movies) %>% 
+#  mutate(movieId = as.numeric(levels(movieId))[movieId],
+#                                           title = as.character(title),
+#                                           genres = as.character(genres))
+
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") 
+# if using R 3.5 or earlier, use `set.seed(1)`
+
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, 
+                                  list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+# end of provided code in the course ####
+gc()
+
+```
+
+
+
+\newpage
+
+# Analysis
+
+## Initial exploration and visualization
+
+In this section we will take the first look at the loaded data frame.
+
+**Dimensions**
+
+The data is 9000055 observations and 6 colunms.
+
+```{r, echo=FALSE}
+dim(edx)
+```
+
+**Head**
+
+A preview of the data is shown below
+
+```{r, echo=FALSE}
+head(edx, 12) %>% kable()
+```
+
+**Missing values**
+
+Ok, looks like there is no missing data.
+
+```{r, echo=FALSE}
+sapply(edx, function(x) sum(is.na(x))) %>% 
+  kable(col.names = c("Missing Values"))
+```
+
+**Number of Users and Movies**
+
+```{r, echo=FALSE}
+summarize(edx, users = n_distinct(edx$userId), 
+          movies = n_distinct(edx$movieId)) %>%
+  kable(col.names = c("Unique Users", "Unique Movies"))
+```
+
+\newpage
+
+
+## Cleaning
+### Cleaning edx data set
+
+We will perform necessary cleaning and some transformations so that the data better suits our needs. 
+
+We convert timestamp to a human readable object on edx data set.
+
+```{r, echo=FALSE}
+edx$timestamp <- edx$timestamp %>%
+  as.POSIXct(origin = "1970-01-01") %>% year()
+```
+
+And we extract the year of release.
+
+```{r, echo=FALSE}
+edx <- edx %>%
+  mutate(title = str_trim(title)) %>%
+  extract(title,
+          c("titleTemp", "release"),
+          regex = "^(.*) \\(([0-9 \\-]*)\\)$",
+          remove = F) %>%
+  mutate(release = if_else(str_length(release) > 4,
+                           as.integer(str_split(release, "-",
+                                                simplify = T)[1]),
+                           as.integer(release))
+  )  %>%
+  select(-titleTemp)
+
+head(edx) %>% kable()
+```
+
+We separate genre to have one unique genre per each column.
+
+```{r, echo=FALSE}
+edx <- edx %>% separate_rows(genres, sep = "\\|")
+#  takes 2 minutes
+head(edx) %>% kable()
+```
+
+### Cleaning validation data set
+
+The validation data will NOT be used for training, developing, or selecting the algorithm and it will ONLY be used for evaluating the RMSE of the final algorithm.
+
+We simply do the cleaning as we did for edx data set. We convert timestamp to a human readable object and we extract the year of release. Then, we separate genre.
+
+```{r echo=FALSE}
+validation$timestamp <- validation$timestamp %>%
+  as.POSIXct(origin = "1970-01-01") %>% year()
+```
+
+```{r echo=FALSE}
+validation <- validation %>%
+  mutate(title = str_trim(title)) %>%
+  extract(title,
+          c("titleTemp", "release"),
+          regex = "^(.*) \\(([0-9 \\-]*)\\)$",
+          remove = F) %>%
+  mutate(release = if_else(str_length(release) > 4,
+                           as.integer(str_split(release, "-",
+                                                simplify = T)[1]),
+                           as.integer(release))
+  )  %>%
+  select(-titleTemp)
+```
+
+```{r echo=FALSE}
+validation <- validation %>% separate_rows(genres, sep = "\\|")
+```
+
+
+
+
+
+
+\newpage
+
+## Exploratory Data Analysis
+
+**Movie**
+
+First we can plot the number of ratings per movie.
+
+```{r, echo=FALSE}
+edx %>% 
+  count(movieId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, color = "black") + 
+  scale_x_log10() + 
+  ggtitle("Movies distribution") + theme_minimal() +
+  xlab("number of ratings")
+```
+
+It can be seen that majority of movies have been rated approximately between 50 and 150 times.
+
+**First twelve most rated movies**
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+edx %>% group_by(movieId, title) %>% summarise(n = n()) %>%
+  arrange(desc(n)) %>% head(10) %>% kable()
+```
+
+\newpage
+
+**User**
+
+The number of users' ratings frequency can also be plotted.
+
+```{r, echo=FALSE}
+edx %>%
+  dplyr::count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, color = "black") + 
+  scale_x_log10() +
+  ggtitle("User distribution") +
+  xlab("number of ratings") + theme_minimal()
+```
+
+The plot represents that majority of users have rated approximately between 30 and 120 movies.
+
+**Ten most active users**
+
+```{r, echo=FALSE}
+edx %>% dplyr::count(userId) %>% arrange(desc(n)) %>% head(10) %>%
+  kable()
+```
+
+\newpage
+
+**Rating**
+
+There are 10 possible choices rating between 0.5 and 5.
+
+```{r, echo=FALSE}
+data.frame(table(edx$rating)) %>%
+  kable(col.names = c("rate", "count"))
+```
+
+```{r, echo=FALSE}
+edx %>% ggplot(aes(rating)) + geom_bar() + theme_minimal() +
+  ggtitle("Distribution of rating")
+```
+
+As can be seen, users who have rated movies tend to assign higher scores in general. Actually, most ratings are a 4-star, followed by a 3-star rating. In addition, most users tend to assign whole star rating.
+
+\newpage
+
+**Year**
+
+The rating starts in 1995 and ends in 2009.
+
+```{r, echo=FALSE}
+range(edx$timestamp)
+```
+
+Number of rating per year :
+
+```{r, echo=FALSE}
+edx %>% group_by(timestamp) %>% summarise(n=n()) %>%
+  arrange(desc(n)) %>% kable(col.names = c("year", "count"))
+```
+
+```{r, echo=FALSE}
+edx %>% ggplot(aes(timestamp)) + geom_bar() + theme_minimal() +
+  ggtitle("Distribution of rating") +
+  xlab("year") +
+  ylab("number of ratings")
+```
+
+\newpage
+
+**Year of release**
+
+Year of release starts in 1915.
+
+```{r, echo=FALSE}
+range(edx$release)
+```
+
+```{r, echo=FALSE}
+edx %>% group_by(release) %>% summarise(n = n()) %>%
+  ggplot(aes(release, n)) + geom_line(color = "blue") + 
+  theme_minimal() + ggtitle("Distribution of release") + 
+  ylab("number of ratings")
+```
+
+\newpage
+
+**Genre**
+
+```{r, echo=FALSE}
+edx %>% count(genres) %>% arrange(desc(n)) %>% 
+  kable(col.names = c("genre", "count"))
+```
+
+```{r, echo=FALSE}
+
+edx %>% mutate(genres = factor(genres,
+                               levels = names(sort(table(edx$genres))))) %>%
+  ggplot(aes(genres)) +  geom_bar(fill = "green") + theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("Distribution of movie per genre")
+```
+
+
+\newpage
+
+
+## Data processing
+### Metric used
+
+**Residual Mean Square Error**\
+
+We create a function of RMSE to measure the accuracy of prediction.
+
+$$\mbox{RMSE} = \sqrt{\frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y_i})^2}$$
+
+```{r, echo=FALSE}
+RMSE <- function(actual , prediction){
+  sqrt(mean((actual - prediction)^2))
+}
+```
+
+### Create train_set and test_set
+
+```{r echo=FALSE, warning=FALSE}
+set.seed(1, sample.kind = "Rounding")
+test_index <- createDataPartition(edx$rating, 
+                                  times = 1, p = 0.25, list = FALSE)
+
+train_set <- edx[-test_index, ]
+temp <- edx[test_index, ]
+```
+
+train_set is 75% of whole edx data, and test_set is 25% remaining. We select movies and users who aren't in the train_set and remove them from
+the test_set, then add them to the train_set.
+
+```{r, echo=FALSE, include=FALSE}
+test_set <- temp %>% semi_join(train_set, by = "movieId") %>% 
+  semi_join(train_set, by = "userId")
+removed <- anti_join(temp, test_set)
+```
+
+```{r echo=FALSE}
+train_set <- rbind(train_set, removed)
+
+rm(temp, test_index, removed, edx)
+```
+
+\newpage
+
+# Results
+## Step-by-step model
+### Just the mean : Predict rating as the average
+
+If all movies are rated by the average, the RMSE will be :
+
+```{r echo=FALSE}
+mean_rating <- mean(train_set$rating)
+```
+
+```{r echo=FALSE}
+
+just_avg <- RMSE(test_set$rating, mean_rating)
+
+results <- data.frame("method" = "just the avg", "rmse" = just_avg)
+results %>% kable()
+rm(just_avg)
+```
+
+### Movie effect
+
+```{r echo=FALSE}
+movie_avg <- train_set %>%
+  group_by(movieId) %>%
+  summarize(movie_eff = mean(rating - mean_rating))
+
+movie_eff <- test_set %>% left_join(movie_avg, by = "movieId") %>% 
+  mutate(pred = mean_rating + movie_eff) %>% pull(pred)
+```
+
+RMSE of movie effect added to just the average.
+
+```{r echo=FALSE}
+movie_eff_rmse <- RMSE(test_set$rating, movie_eff)
+
+results <- results %>% add_row(method = "movie_eff", 
+                               rmse = movie_eff_rmse)
+results %>% kable()
+rm(movie_eff_rmse)
+```
+
+### User effect
+
+```{r echo=FALSE}
+user_avg <- train_set %>%
+  left_join(movie_avg, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(user_eff = mean(rating - mean_rating - movie_eff))
+
+user_eff <- test_set %>% 
+  left_join(movie_avg, by = 'movieId') %>%
+  left_join(user_avg , by = 'userId') %>% 
+  mutate(pred = mean_rating + movie_eff + user_eff) %>% pull(pred)
+```
+
+RMSE of user effect added to just the average and movie effect.
+
+```{r echo=FALSE}
+user_rmse <- RMSE(test_set$rating , user_eff)
+results <- results %>% add_row(method = "user_eff", 
+                               rmse = user_rmse)
+results %>% kable()
+rm(user_rmse)
+```
+
+### Genre effect
+
+```{r echo=FALSE}
+genre_avg <- train_set %>% 
+  left_join(movie_avg, by='movieId') %>%
+  left_join(user_avg, by = "userId") %>%
+  group_by(genres) %>%
+  summarize(genre_eff = mean(rating - mean_rating - movie_eff - user_eff))
+
+genre_eff <- test_set %>% 
+  left_join(movie_avg, by = 'movieId') %>%
+  left_join(user_avg , by = 'userId') %>%
+  left_join(genre_avg, by ="genres") %>%
+  mutate(pred = mean_rating + movie_eff + user_eff + genre_eff) %>% pull(pred)
+```
+
+RMSE of genre effect added to just the average, movie effect and user effect.
+
+```{r echo=FALSE}
+genre_rmse <- RMSE(test_set$rating ,  genre_eff)
+results <- results %>% add_row(method = "genre_eff", 
+                               rmse = genre_rmse)
+results %>% kable()
+rm(genre_rmse)
+```
+
+### Timestamp effect
+
+```{r echo=FALSE}
+timestamp_avgs <- train_set %>%
+  left_join(movie_avg, by = 'movieId') %>% 
+  left_join(user_avg, by = "userId") %>%
+  left_join(genre_avg, by = "genres") %>% 
+  group_by(timestamp) %>%
+  summarize(timestamp_eff = 
+         mean(rating - mean_rating - movie_eff - user_eff - genre_eff))
+```
+
+```{r echo=FALSE}
+timestamp_eff <- test_set %>% 
+  left_join(movie_avg, by = 'movieId') %>%
+  left_join(user_avg , by = 'userId') %>%
+  left_join(genre_avg, by = "genres")%>% 
+  left_join(timestamp_avgs, by = "timestamp") %>%
+  mutate(pred = mean_rating + movie_eff + user_eff + genre_eff + timestamp_eff)
+```
+
+RMSE of timestamp effect added to just the average, movie effect, user effect, and genre effect.
+
+```{r echo=FALSE}
+timestamp_rmse <- RMSE(test_set$rating ,  timestamp_eff$pred)
+results <- results %>% add_row(method = "timestamp_eff", 
+                               rmse = timestamp_rmse)
+results %>% kable()
+rm(timestamp_eff)
+# rm(avg_rating, movie_eff, movie_avg, user_eff, user_avg, genre_eff,
+#   genre_avg, timestamp_eff, timestamp_avg)
+```
+
+## Regularization
+
+The supposed “best” and “worst” movies were rated by very few users. These movies were mostly obscure ones. This is because with just a few users, we have more uncertainty.
+These are noisy estimates that we should not trust, especially when it comes to prediction. Large errors can increase our RMSE, so we would rather be conservative when unsure.
+
+Regularization permits us to penalize large estimates that are formed using small sample sizes. It has commonalities with the Bayesian approach.
+
+We build regularization with user_score, movie_score, and genre_score. \
+Lambda is a tuning parameter. We calculate the best of it.
+
+```{r echo=FALSE}
+lambdas <- seq(1, 8, 0.5)
+```
+
+```{r echo=FALSE}
+# 3 minutes to execute
+rmses <- sapply(lambdas, function(l)
+{
+  avg_rating <- mean(train_set$rating)
+  
+  movie_score <- train_set %>%
+    group_by(movieId) %>%
+    summarize(b_movie = sum(rating - avg_rating) / (n()+l))
+  
+  user_score <- train_set %>% 
+    left_join(movie_score, by = "movieId") %>%
+    mutate(b_movie = ifelse(is.na(b_movie), 0, b_movie)) %>%
+    group_by(userId) %>%
+    summarize(b_user = sum(rating - avg_rating - b_movie) / (n()+l))
+  
+  genre_score <- train_set %>%
+    left_join(movie_score, by = "movieId") %>%
+    left_join(user_score, by = "userId") %>%
+    mutate(b_movie = ifelse(is.na(b_movie), 0, b_movie)) %>%
+    mutate(b_user = ifelse(is.na(b_user), 0, b_user)) %>%
+    group_by(genres) %>%
+    summarise(b_genre = sum(rating - avg_rating - b_movie - b_user) / (n()+l))
+  
+  predicted_ratings <- test_set %>% 
+    left_join(movie_score, by = "movieId") %>%
+    left_join(user_score, by = "userId") %>%
+    left_join(genre_score, by = "genres") %>%
+    mutate(b_movie = ifelse(is.na(b_movie), 0, b_movie)) %>%
+    mutate(b_user = ifelse(is.na(b_user), 0, b_user)) %>%
+    mutate(b_genre = ifelse(is.na(b_genre), 0, b_genre)) %>%
+    mutate(pred = avg_rating + b_movie + b_user + b_genre) %>%
+    .$pred
+  
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+```
+
+```{r echo=FALSE}
+lambda <- lambdas[which.min(rmses)]
+# lambda
+qplot(lambdas, rmses)
+```
+
+Lambda which minimises RMSE is 4.5
+
+```{r echo=FALSE}
+lambda <- 4.5
+
+avg_rating <- mean(train_set$rating)
+
+```
+
+```{r echo=FALSE}
+movie_score <- train_set %>%
+  group_by(movieId) %>%
+  summarize(b_movie = sum(rating - avg_rating) / (n()+lambda))
+
+user_score <- train_set %>% 
+  left_join(movie_score, by = "movieId") %>%
+  mutate(b_movie = ifelse(is.na(b_movie), 0, b_movie)) %>%
+  group_by(userId) %>%
+  summarize(b_user = sum(rating - avg_rating - b_movie) / (n()+lambda))
+
+genre_score <- train_set %>%
+  left_join(movie_score, by = "movieId") %>%
+  left_join(user_score, by = "userId") %>%
+  mutate(b_movie = ifelse(is.na(b_movie), 0, b_movie)) %>%
+  mutate(b_user = ifelse(is.na(b_user), 0, b_user)) %>%
+  group_by(genres) %>%
+  summarise(b_genre = sum(rating - avg_rating - b_movie - b_user) / (n()+lambda))
+```
+
+#### Predicting
+
+```{r echo=FALSE}
+predicted_ratings <- test_set %>% 
+  left_join(movie_score, by = "movieId") %>%
+  left_join(user_score, by = "userId") %>%
+  left_join(genre_score, by = "genres") %>%
+  mutate(b_movie = ifelse(is.na(b_movie), 0, b_movie)) %>%
+  mutate(b_user = ifelse(is.na(b_user), 0, b_user)) %>%
+  mutate(b_genre = ifelse(is.na(b_genre), 0, b_genre)) %>%
+  mutate(pred = avg_rating + b_movie + b_user + b_genre) %>%
+  .$pred
+```
+
+```{r echo=FALSE}
+regularization_rmse <- RMSE(test_set$rating, predicted_ratings)
+
+results <- results %>% add_row(method = "regularization", 
+                               rmse = regularization_rmse)
+results %>% kable()
+```
+
+# Conclusion
+
+The goal of this analysis was to build a system which can predict movies rating based on a training data. We performed some data exploration and tried different models.
+
+For the final model, we use the best performing model in the previous section, which is the regularized model. The validation data is set in a way so the users and movies in the data are all present in the edx data.
+
+We apply the best model on the validation set.
+
+```{r echo=FALSE}
+predicted_ratings <- validation %>% 
+  left_join(movie_score, by = "movieId") %>%
+  left_join(user_score, by = "userId") %>%
+  left_join(genre_score, by = "genres") %>%
+  mutate(b_movie = ifelse(is.na(b_movie), 0, b_movie)) %>%
+  mutate(b_user = ifelse(is.na(b_user), 0, b_user)) %>%
+  mutate(b_genre = ifelse(is.na(b_genre), 0, b_genre)) %>%
+  mutate(pred = avg_rating + b_movie + b_user + b_genre) %>%
+  .$pred
+```
+
+**RMSE of validation**
+
+```{r echo=FALSE}
+validation_rmse <- RMSE(validation$rating, predicted_ratings)
+results <- results %>% add_row(method = "validation", 
+                               rmse = validation_rmse)
+results %>% kable()
+rm(genre_score, movie_score, user_score, avg_rating, predicted_ratings, 
+   validation_rmse)
+```
+
+The final RMSE is 0.863\
+There is much ways for improvement. One of them is to build a system based on matrix factorization.
+
+
+
+
+
+
+
